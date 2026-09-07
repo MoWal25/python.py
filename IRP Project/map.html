@@ -1,0 +1,1758 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Global Flight Radar</title>
+
+    <link
+        rel="stylesheet"
+        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    />
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: Arial, Helvetica, sans-serif;
+            background: #07111f;
+            color: white;
+            overflow: hidden;
+        }
+
+        #map {
+            position: absolute;
+            inset: 0;
+            z-index: 1;
+        }
+
+        /* =========================
+           TOP TITLE
+        ========================= */
+
+        .title-bar {
+            position: absolute;
+            top: 15px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+
+            background: rgba(7, 17, 31, 0.92);
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 12px;
+
+            padding: 10px 20px;
+
+            box-shadow: 0 8px 25px rgba(0,0,0,0.35);
+
+            backdrop-filter: blur(10px);
+        }
+
+        .title-bar h1 {
+            margin: 0;
+            font-size: 20px;
+            letter-spacing: 1px;
+        }
+
+        .title-bar span {
+            color: #69b7ff;
+        }
+
+        /* =========================
+           DASHBOARD
+        ========================= */
+
+        .dashboard {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+
+            z-index: 1000;
+
+            width: 250px;
+
+            background: rgba(7, 17, 31, 0.94);
+            border: 1px solid rgba(255,255,255,0.12);
+
+            border-radius: 16px;
+
+            padding: 16px;
+
+            box-shadow: 0 12px 35px rgba(0,0,0,0.45);
+
+            backdrop-filter: blur(12px);
+        }
+
+        .dashboard h2 {
+            margin: 0 0 12px 0;
+            font-size: 17px;
+        }
+
+        .stat {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+
+            padding: 9px 10px;
+
+            margin-bottom: 7px;
+
+            background: rgba(255,255,255,0.045);
+            border-radius: 9px;
+
+            font-size: 14px;
+        }
+
+        .stat strong {
+            font-size: 17px;
+        }
+
+        .live {
+            color: #65ff9a;
+        }
+
+        .climbing {
+            color: #58ff75;
+        }
+
+        .cruising {
+            color: #4da6ff;
+        }
+
+        .descending {
+            color: #ff5757;
+        }
+
+        /* =========================
+           SEARCH
+        ========================= */
+
+        .search-panel {
+            position: absolute;
+
+            top: 20px;
+            right: 20px;
+
+            width: 310px;
+
+            z-index: 1000;
+
+            background: rgba(7, 17, 31, 0.94);
+
+            border: 1px solid rgba(255,255,255,0.12);
+
+            border-radius: 16px;
+
+            padding: 16px;
+
+            box-shadow: 0 12px 35px rgba(0,0,0,0.45);
+
+            backdrop-filter: blur(12px);
+        }
+
+        .search-panel h2 {
+            margin: 0 0 5px 0;
+            font-size: 17px;
+        }
+
+        .search-panel p {
+            margin: 0 0 12px 0;
+
+            font-size: 12px;
+            color: #9aa8ba;
+        }
+
+        .search-row {
+            display: flex;
+            gap: 7px;
+        }
+
+        #flightSearch {
+            flex: 1;
+
+            min-width: 0;
+
+            padding: 10px 11px;
+
+            border-radius: 8px;
+
+            border: 1px solid rgba(255,255,255,0.15);
+
+            background: rgba(255,255,255,0.07);
+
+            color: white;
+
+            outline: none;
+
+            font-size: 13px;
+        }
+
+        #flightSearch::placeholder {
+            color: #718096;
+        }
+
+        #searchButton {
+            border: none;
+
+            padding: 10px 13px;
+
+            border-radius: 8px;
+
+            background: #2878ff;
+
+            color: white;
+
+            font-weight: bold;
+
+            cursor: pointer;
+
+            transition: 0.2s;
+        }
+
+        #searchButton:hover {
+            background: #4390ff;
+        }
+
+        #clearTrackButton {
+            width: 100%;
+
+            margin-top: 8px;
+
+            padding: 8px;
+
+            border-radius: 8px;
+
+            border: 1px solid rgba(255,255,255,0.12);
+
+            background: rgba(255,255,255,0.05);
+
+            color: #cbd5e1;
+
+            cursor: pointer;
+
+            display: none;
+        }
+
+        #clearTrackButton:hover {
+            background: rgba(255,255,255,0.1);
+        }
+
+        #searchMessage {
+            margin-top: 10px;
+
+            font-size: 12px;
+
+            line-height: 1.4;
+
+            color: #9aa8ba;
+
+            display: none;
+        }
+
+        /* =========================
+           FLIGHT INFO
+        ========================= */
+
+        .flight-info {
+            position: absolute;
+
+            bottom: 20px;
+            left: 20px;
+
+            width: 300px;
+
+            z-index: 1000;
+
+            background: rgba(7, 17, 31, 0.95);
+
+            border: 1px solid rgba(255,255,255,0.12);
+
+            border-radius: 16px;
+
+            padding: 16px;
+
+            box-shadow: 0 12px 35px rgba(0,0,0,0.45);
+
+            backdrop-filter: blur(12px);
+
+            display: none;
+        }
+
+        .flight-info h2 {
+            margin: 0 0 3px 0;
+
+            font-size: 22px;
+        }
+
+        .flight-subtitle {
+            color: #8ea0b5;
+
+            font-size: 12px;
+
+            margin-bottom: 13px;
+        }
+
+        .info-grid {
+            display: grid;
+
+            grid-template-columns: 1fr 1fr;
+
+            gap: 8px;
+        }
+
+        .info-item {
+            background: rgba(255,255,255,0.045);
+
+            border-radius: 8px;
+
+            padding: 9px;
+        }
+
+        .info-label {
+            color: #8191a6;
+
+            font-size: 10px;
+
+            margin-bottom: 4px;
+
+            text-transform: uppercase;
+        }
+
+        .info-value {
+            font-size: 13px;
+
+            font-weight: bold;
+        }
+
+        /* =========================
+           TRACK INFO
+        ========================= */
+
+        .track-info {
+            margin-top: 12px;
+
+            padding: 10px;
+
+            background: rgba(40,120,255,0.10);
+
+            border: 1px solid rgba(40,120,255,0.25);
+
+            border-radius: 9px;
+
+            font-size: 12px;
+
+            line-height: 1.5;
+
+            color: #b9d6ff;
+        }
+
+        /* =========================
+           LEGEND
+        ========================= */
+
+        .legend {
+            position: absolute;
+
+            right: 20px;
+            bottom: 20px;
+
+            z-index: 1000;
+
+            background: rgba(7,17,31,0.94);
+
+            border: 1px solid rgba(255,255,255,0.12);
+
+            border-radius: 12px;
+
+            padding: 12px 15px;
+
+            box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+
+            backdrop-filter: blur(10px);
+
+            font-size: 12px;
+        }
+
+        .legend-title {
+            font-weight: bold;
+
+            margin-bottom: 8px;
+        }
+
+        .legend-item {
+            display: flex;
+
+            align-items: center;
+
+            margin-bottom: 6px;
+        }
+
+        .legend-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .legend-color {
+            width: 12px;
+            height: 12px;
+
+            border-radius: 50%;
+
+            margin-right: 8px;
+        }
+
+        .climbing-color {
+            background: #58ff75;
+            box-shadow: 0 0 8px #58ff75;
+        }
+
+        .cruising-color {
+            background: #4da6ff;
+            box-shadow: 0 0 8px #4da6ff;
+        }
+
+        .descending-color {
+            background: #ff5757;
+            box-shadow: 0 0 8px #ff5757;
+        }
+
+        /* =========================
+           LOADING
+        ========================= */
+
+        .loading {
+            position: absolute;
+
+            inset: 0;
+
+            z-index: 2000;
+
+            display: flex;
+
+            align-items: center;
+            justify-content: center;
+
+            background: rgba(7,17,31,0.78);
+
+            backdrop-filter: blur(4px);
+
+            font-size: 16px;
+
+            pointer-events: none;
+
+            opacity: 0;
+
+            transition: 0.2s;
+        }
+
+        .loading.show {
+            opacity: 1;
+        }
+
+        /* =========================
+           AIRCRAFT ICON
+        ========================= */
+
+        .aircraft-icon {
+            width: 34px;
+            height: 34px;
+
+            display: flex;
+
+            align-items: center;
+            justify-content: center;
+
+            font-size: 24px;
+
+            transform-origin: center;
+
+            filter: drop-shadow(0 0 6px rgba(255,255,255,0.35));
+
+            transition: filter 0.2s;
+        }
+
+        /* =========================
+           3D BUTTON
+        ========================= */
+
+        .three-d-button {
+            position: absolute;
+
+            bottom: 20px;
+            left: 50%;
+
+            transform: translateX(-50%);
+
+            z-index: 1000;
+
+            padding: 10px 18px;
+
+            border-radius: 9px;
+
+            background: rgba(7,17,31,0.94);
+
+            border: 1px solid rgba(255,255,255,0.15);
+
+            color: white;
+
+            text-decoration: none;
+
+            font-size: 12px;
+
+            box-shadow: 0 8px 25px rgba(0,0,0,0.35);
+        }
+
+        .three-d-button:hover {
+            background: rgba(25,45,70,0.96);
+        }
+
+        /* =========================
+           RESPONSIVE
+        ========================= */
+
+        @media (max-width: 800px) {
+
+            .title-bar {
+                display: none;
+            }
+
+            .dashboard {
+                width: 210px;
+                top: 10px;
+                left: 10px;
+            }
+
+            .search-panel {
+                width: 270px;
+                top: 10px;
+                right: 10px;
+            }
+
+            .flight-info {
+                width: 270px;
+                bottom: 10px;
+                left: 10px;
+            }
+
+            .legend {
+                right: 10px;
+                bottom: 10px;
+                display: none;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="map"></div>
+
+    <!-- =========================
+         TITLE
+    ========================= -->
+
+    <div class="title-bar">
+        <h1>🌍 GLOBAL <span>FLIGHT RADAR</span></h1>
+    </div>
+
+    <!-- =========================
+         DASHBOARD
+    ========================= -->
+
+    <div class="dashboard">
+
+        <h2>Airspace Status</h2>
+
+        <div class="stat">
+            <span>Aircraft</span>
+            <strong id="aircraftCount">0</strong>
+        </div>
+
+        <div class="stat">
+            <span class="climbing">Climbing</span>
+            <strong id="climbingCount" class="climbing">0</strong>
+        </div>
+
+        <div class="stat">
+            <span class="cruising">Cruising</span>
+            <strong id="cruisingCount" class="cruising">0</strong>
+        </div>
+
+        <div class="stat">
+            <span class="descending">Descending</span>
+            <strong id="descendingCount" class="descending">0</strong>
+        </div>
+
+        <div class="stat">
+            <span>Status</span>
+            <strong id="liveStatus" class="live">● LIVE</strong>
+        </div>
+
+    </div>
+
+    <!-- =========================
+         SEARCH
+    ========================= -->
+
+    <div class="search-panel">
+
+        <h2>🔎 Flight Search</h2>
+
+        <p>
+            Search a flight number to inspect its recorded track.
+        </p>
+
+        <div class="search-row">
+
+            <input
+                id="flightSearch"
+                type="text"
+                placeholder="e.g. BAW186, EK202"
+                autocomplete="off"
+            >
+
+            <button id="searchButton">
+                SEARCH
+            </button>
+
+        </div>
+
+        <button id="clearTrackButton">
+            ✕ Clear Flight Track
+        </button>
+
+        <div id="searchMessage"></div>
+
+    </div>
+
+    <!-- =========================
+         FLIGHT INFO
+    ========================= -->
+
+    <div class="flight-info" id="flightInfo">
+
+        <h2 id="flightNumber">—</h2>
+
+        <div class="flight-subtitle">
+            Selected Flight
+        </div>
+
+        <div class="info-grid">
+
+            <div class="info-item">
+                <div class="info-label">Country</div>
+                <div class="info-value" id="flightCountry">—</div>
+            </div>
+
+            <div class="info-item">
+                <div class="info-label">Phase</div>
+                <div class="info-value" id="flightPhase">—</div>
+            </div>
+
+            <div class="info-item">
+                <div class="info-label">Altitude</div>
+                <div class="info-value" id="flightAltitude">—</div>
+            </div>
+
+            <div class="info-item">
+                <div class="info-label">Speed</div>
+                <div class="info-value" id="flightSpeed">—</div>
+            </div>
+
+            <div class="info-item">
+                <div class="info-label">Heading</div>
+                <div class="info-value" id="flightHeading">—</div>
+            </div>
+
+            <div class="info-item">
+                <div class="info-label">Distance</div>
+                <div class="info-value" id="flightDistance">—</div>
+            </div>
+
+        </div>
+
+        <div class="track-info" id="trackInfo">
+            No historical track loaded.
+        </div>
+
+    </div>
+
+    <!-- =========================
+         LEGEND
+    ========================= -->
+
+    <div class="legend">
+
+        <div class="legend-title">
+            Flight Phase
+        </div>
+
+        <div class="legend-item">
+            <div class="legend-color climbing-color"></div>
+            Climbing
+        </div>
+
+        <div class="legend-item">
+            <div class="legend-color cruising-color"></div>
+            Cruising
+        </div>
+
+        <div class="legend-item">
+            <div class="legend-color descending-color"></div>
+            Descending
+        </div>
+
+    </div>
+
+    <!-- =========================
+         3D BUTTON
+    ========================= -->
+
+    <a href="/3d" class="three-d-button">
+        🚀 Open 3D Radar
+    </a>
+
+    <!-- =========================
+         LOADING
+    ========================= -->
+
+    <div class="loading" id="loading">
+        Loading flight data...
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <script>
+
+        /* ============================================================
+           MAP SETUP
+        ============================================================ */
+
+        const airportLat = 51.4700;
+        const airportLon = -0.4543;
+
+        const map = L.map("map", {
+            zoomControl: true
+        }).setView(
+            [airportLat, airportLon],
+            8
+        );
+
+        L.tileLayer(
+            "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+            {
+                maxZoom: 18,
+                attribution: "&copy; OpenStreetMap contributors"
+            }
+        ).addTo(map);
+
+
+        /* ============================================================
+           AIRPORT MARKER
+        ============================================================ */
+
+        const airportIcon = L.divIcon({
+            className: "",
+            html: `
+                <div style="
+                    width:34px;
+                    height:34px;
+                    border-radius:50%;
+                    background:#ffffff;
+                    color:#07111f;
+                    display:flex;
+                    align-items:center;
+                    justify-content:center;
+                    font-size:17px;
+                    box-shadow:0 0 15px rgba(255,255,255,0.8);
+                    border:3px solid #2878ff;
+                ">
+                    ✈
+                </div>
+            `,
+            iconSize: [34, 34],
+            iconAnchor: [17, 17]
+        });
+
+        const airportMarker = L.marker(
+            [airportLat, airportLon],
+            {
+                icon: airportIcon
+            }
+        )
+        .addTo(map)
+        .bindPopup(`
+            <b>London Heathrow Airport</b><br>
+            LHR / EGLL<br>
+            100 km monitored airspace
+        `);
+
+
+        /* ============================================================
+           100 KM GEOFENCE
+        ============================================================ */
+
+        const geofence = L.circle(
+            [airportLat, airportLon],
+            {
+                radius: 100000,
+                color: "#2878ff",
+                weight: 2,
+                fillColor: "#2878ff",
+                fillOpacity: 0.04
+            }
+        ).addTo(map);
+
+
+        /* ============================================================
+           GLOBAL VARIABLES
+        ============================================================ */
+
+        let aircraftMarkers = {};
+        let aircraftData = [];
+
+        let flightTrack = null;
+
+        let currentSelectedFlight = null;
+
+        const ANIMATION_TIME = 19000;
+
+
+        /* ============================================================
+           PHASE COLORS
+        ============================================================ */
+
+        function getFlightColor(phase) {
+
+            if (phase === "CLIMBING") {
+                return "#58ff75";
+            }
+
+            if (phase === "DESCENDING") {
+                return "#ff5757";
+            }
+
+            return "#4da6ff";
+        }
+
+
+        /* ============================================================
+           AIRCRAFT ICON
+        ============================================================ */
+
+        function createAircraftIcon(aircraft) {
+
+            const color = getFlightColor(
+                aircraft.flight_phase
+            );
+
+            const heading = aircraft.heading || 0;
+
+            return L.divIcon({
+
+                className: "",
+
+                html: `
+                    <div
+                        class="aircraft-icon"
+                        style="
+                            color:${color};
+                            transform:rotate(${heading}deg);
+                        "
+                    >
+                        ✈
+                    </div>
+                `,
+
+                iconSize: [34, 34],
+
+                iconAnchor: [17, 17]
+            });
+        }
+
+
+        /* ============================================================
+           POPUP
+        ============================================================ */
+
+        function createPopup(aircraft) {
+
+            const altitude =
+                aircraft.altitude !== null &&
+                aircraft.altitude !== undefined
+                    ? Math.round(aircraft.altitude) + " m"
+                    : "N/A";
+
+            const speed =
+                aircraft.velocity !== null &&
+                aircraft.velocity !== undefined
+                    ? Math.round(aircraft.velocity * 3.6) + " km/h"
+                    : "N/A";
+
+            const heading =
+                aircraft.heading !== null &&
+                aircraft.heading !== undefined
+                    ? Math.round(aircraft.heading) + "°"
+                    : "N/A";
+
+            const distance =
+                aircraft.distance_from_airport !== null &&
+                aircraft.distance_from_airport !== undefined
+                    ? aircraft.distance_from_airport.toFixed(1) + " km"
+                    : "N/A";
+
+            return `
+                <div style="
+                    min-width:190px;
+                    font-family:Arial;
+                ">
+
+                    <h3 style="
+                        margin:0 0 7px 0;
+                    ">
+                        ✈ ${aircraft.callsign || "Unknown"}
+                    </h3>
+
+                    <b>Country:</b>
+                    ${aircraft.country || "Unknown"}<br>
+
+                    <b>Altitude:</b>
+                    ${altitude}<br>
+
+                    <b>Speed:</b>
+                    ${speed}<br>
+
+                    <b>Heading:</b>
+                    ${heading}<br>
+
+                    <b>Phase:</b>
+                    ${aircraft.flight_phase || "UNKNOWN"}<br>
+
+                    <b>Distance:</b>
+                    ${distance}
+
+                </div>
+            `;
+        }
+
+
+        /* ============================================================
+           DASHBOARD UPDATE
+        ============================================================ */
+
+        function updateDashboard() {
+
+            let climbing = 0;
+            let cruising = 0;
+            let descending = 0;
+
+            aircraftData.forEach(aircraft => {
+
+                if (aircraft.flight_phase === "CLIMBING") {
+                    climbing++;
+                }
+                else if (aircraft.flight_phase === "DESCENDING") {
+                    descending++;
+                }
+                else {
+                    cruising++;
+                }
+
+            });
+
+            document.getElementById(
+                "aircraftCount"
+            ).textContent = aircraftData.length;
+
+            document.getElementById(
+                "climbingCount"
+            ).textContent = climbing;
+
+            document.getElementById(
+                "cruisingCount"
+            ).textContent = cruising;
+
+            document.getElementById(
+                "descendingCount"
+            ).textContent = descending;
+
+            document.getElementById(
+                "liveStatus"
+            ).textContent =
+                "● LIVE • " +
+                new Date().toLocaleTimeString();
+
+        }
+
+
+        /* ============================================================
+           SMOOTH AIRCRAFT MOVEMENT
+        ============================================================ */
+
+        function moveAircraft(
+            marker,
+            newLat,
+            newLon,
+            duration = ANIMATION_TIME
+        ) {
+
+            const start = marker.getLatLng();
+
+            const startLat = start.lat;
+            const startLon = start.lng;
+
+            const startTime = performance.now();
+
+            function animate(currentTime) {
+
+                const elapsed =
+                    currentTime - startTime;
+
+                const progress =
+                    Math.min(
+                        elapsed / duration,
+                        1
+                    );
+
+                const eased =
+                    progress < 0.5
+                        ? 2 * progress * progress
+                        : 1 - Math.pow(
+                            -2 * progress + 2,
+                            2
+                        ) / 2;
+
+                const lat =
+                    startLat +
+                    (newLat - startLat) * eased;
+
+                const lon =
+                    startLon +
+                    (newLon - startLon) * eased;
+
+                marker.setLatLng([
+                    lat,
+                    lon
+                ]);
+
+                if (progress < 1) {
+                    requestAnimationFrame(
+                        animate
+                    );
+                }
+            }
+
+            requestAnimationFrame(
+                animate
+            );
+        }
+
+
+        /* ============================================================
+           LOAD LIVE FLIGHTS
+        ============================================================ */
+
+        async function loadFlights() {
+
+            try {
+
+                const response =
+                    await fetch(
+                        "/api/flights",
+                        {
+                            cache: "no-store"
+                        }
+                    );
+
+                if (!response.ok) {
+                    throw new Error(
+                        "Server returned " +
+                        response.status
+                    );
+                }
+
+                const data =
+                    await response.json();
+
+                aircraftData =
+                    data.aircraft || [];
+
+                updateDashboard();
+
+                const currentIds =
+                    new Set();
+
+                aircraftData.forEach(
+                    aircraft => {
+
+                        const id =
+                            aircraft.icao24;
+
+                        currentIds.add(id);
+
+                        const lat =
+                            aircraft.latitude;
+
+                        const lon =
+                            aircraft.longitude;
+
+                        if (
+                            lat === null ||
+                            lon === null ||
+                            lat === undefined ||
+                            lon === undefined
+                        ) {
+                            return;
+                        }
+
+                        /* Existing aircraft */
+
+                        if (
+                            aircraftMarkers[id]
+                        ) {
+
+                            const marker =
+                                aircraftMarkers[id];
+
+                            moveAircraft(
+                                marker,
+                                lat,
+                                lon
+                            );
+
+                            marker.setIcon(
+                                createAircraftIcon(
+                                    aircraft
+                                )
+                            );
+
+                            marker.setPopupContent(
+                                createPopup(
+                                    aircraft
+                                )
+                            );
+
+                        }
+
+                        /* New aircraft */
+
+                        else {
+
+                            const marker =
+                                L.marker(
+                                    [lat, lon],
+                                    {
+                                        icon:
+                                            createAircraftIcon(
+                                                aircraft
+                                            )
+                                    }
+                                )
+                                .addTo(map);
+
+                            marker.bindPopup(
+                                createPopup(
+                                    aircraft
+                                )
+                            );
+
+                            aircraftMarkers[id] =
+                                marker;
+                        }
+
+                    }
+                );
+
+
+                /* Remove aircraft no longer visible */
+
+                Object.keys(
+                    aircraftMarkers
+                ).forEach(id => {
+
+                    if (
+                        !currentIds.has(id)
+                    ) {
+
+                        map.removeLayer(
+                            aircraftMarkers[id]
+                        );
+
+                        delete aircraftMarkers[id];
+                    }
+
+                });
+
+            }
+
+            catch (error) {
+
+                console.error(
+                    "Flight loading error:",
+                    error
+                );
+
+                document.getElementById(
+                    "liveStatus"
+                ).textContent =
+                    "● CONNECTION ERROR";
+
+            }
+
+        }
+
+
+        /* ============================================================
+           SEARCH MESSAGE
+        ============================================================ */
+
+        function showSearchMessage(
+            message,
+            success = false
+        ) {
+
+            const element =
+                document.getElementById(
+                    "searchMessage"
+                );
+
+            element.textContent =
+                message;
+
+            element.style.display =
+                "block";
+
+            element.style.color =
+                success
+                    ? "#65ff9a"
+                    : "#ff8b8b";
+
+        }
+
+
+        /* ============================================================
+           CLEAR TRACK
+        ============================================================ */
+
+        function clearFlightTrack() {
+
+            if (flightTrack) {
+
+                map.removeLayer(
+                    flightTrack
+                );
+
+                flightTrack = null;
+            }
+
+            document.getElementById(
+                "clearTrackButton"
+            ).style.display = "none";
+
+            document.getElementById(
+                "trackInfo"
+            ).textContent =
+                "No historical track loaded.";
+
+        }
+
+
+        document.getElementById(
+            "clearTrackButton"
+        ).addEventListener(
+            "click",
+            clearFlightTrack
+        );
+
+
+        /* ============================================================
+           DRAW HISTORICAL TRACK
+        ============================================================ */
+
+        async function loadHistoricalTrack(
+            flightNumber
+        ) {
+
+            try {
+
+                const response =
+                    await fetch(
+                        "/api/flight-history/" +
+                        encodeURIComponent(
+                            flightNumber
+                        ),
+                        {
+                            cache: "no-store"
+                        }
+                    );
+
+                if (!response.ok) {
+
+                    throw new Error(
+                        "History request failed"
+                    );
+                }
+
+                const data =
+                    await response.json();
+
+
+                /*
+                 The current backend may return:
+
+                 1. An array directly
+                 OR
+                 2. An object containing "history"
+
+                 We support both.
+                */
+
+                let history = [];
+
+                if (
+                    Array.isArray(data)
+                ) {
+
+                    history = data;
+
+                }
+                else if (
+                    data &&
+                    Array.isArray(
+                        data.history
+                    )
+                ) {
+
+                    history =
+                        data.history;
+                }
+
+
+                /* Need at least two points */
+
+                const validHistory =
+                    history.filter(
+                        point =>
+                            point.latitude !== null &&
+                            point.longitude !== null &&
+                            point.latitude !== undefined &&
+                            point.longitude !== undefined
+                    );
+
+
+                if (
+                    validHistory.length < 2
+                ) {
+
+                    document.getElementById(
+                        "trackInfo"
+                    ).textContent =
+                        "Live flight found, but there isn't enough recorded history yet. Keep the tracker running to build the historical track.";
+
+                    return;
+                }
+
+
+                /* Remove old track */
+
+                clearFlightTrack();
+
+
+                /* Build route */
+
+                const coordinates =
+                    validHistory.map(
+                        point => [
+                            point.latitude,
+                            point.longitude
+                        ]
+                    );
+
+
+                flightTrack =
+                    L.polyline(
+                        coordinates,
+                        {
+                            color: "#ffffff",
+
+                            weight: 4,
+
+                            opacity: 0.85,
+
+                            dashArray: "8, 8"
+                        }
+                    ).addTo(map);
+
+
+                /*
+                 Add small points at historical
+                 telemetry positions.
+                */
+
+                validHistory.forEach(
+                    (point, index) => {
+
+                        if (
+                            index === 0 ||
+                            index ===
+                            validHistory.length - 1
+                        ) {
+
+                            L.circleMarker(
+                                [
+                                    point.latitude,
+                                    point.longitude
+                                ],
+                                {
+                                    radius: 5,
+
+                                    color: "#ffffff",
+
+                                    weight: 2,
+
+                                    fillOpacity: 0.9
+                                }
+                            )
+                            .addTo(
+                                flightTrack
+                            )
+                            .bindPopup(`
+                                <b>${flightNumber}</b><br>
+                                Recorded telemetry<br>
+                                Time:
+                                ${point.timestamp || "Unknown"}<br>
+                                Altitude:
+                                ${
+                                    point.altitude !== null &&
+                                    point.altitude !== undefined
+                                        ? Math.round(
+                                            point.altitude
+                                          ) + " m"
+                                        : "N/A"
+                                }<br>
+                                Phase:
+                                ${
+                                    point.flight_phase ||
+                                    "UNKNOWN"
+                                }
+                            `);
+
+                        }
+
+                    }
+                );
+
+
+                /* Zoom map to route */
+
+                map.fitBounds(
+                    flightTrack.getBounds(),
+                    {
+                        padding: [70, 70]
+                    }
+                );
+
+
+                document.getElementById(
+                    "clearTrackButton"
+                ).style.display =
+                    "block";
+
+
+                document.getElementById(
+                    "trackInfo"
+                ).innerHTML = `
+                    🗺️ <b>Historical track loaded</b><br>
+                    Recorded telemetry points:
+                    <b>${validHistory.length}</b>
+                `;
+
+                showSearchMessage(
+                    "Historical flight track loaded successfully.",
+                    true
+                );
+
+            }
+
+            catch (error) {
+
+                console.error(
+                    "Historical track error:",
+                    error
+                );
+
+                document.getElementById(
+                    "trackInfo"
+                ).textContent =
+                    "Flight is live, but historical telemetry could not be loaded.";
+
+            }
+
+        }
+
+
+        /* ============================================================
+           SEARCH FLIGHT
+        ============================================================ */
+
+        async function searchFlight() {
+
+            const input =
+                document.getElementById(
+                    "flightSearch"
+                );
+
+            const searchValue =
+                input.value
+                    .trim()
+                    .toUpperCase();
+
+
+            if (!searchValue) {
+
+                showSearchMessage(
+                    "Please enter a flight number."
+                );
+
+                return;
+            }
+
+
+            /*
+             Flight number search is intentionally
+             the primary search method.
+            */
+
+            const flight =
+                aircraftData.find(
+                    aircraft => {
+
+                        const callsign =
+                            (
+                                aircraft.callsign ||
+                                ""
+                            )
+                            .trim()
+                            .toUpperCase();
+
+                        return (
+                            callsign ===
+                            searchValue
+                        );
+                    }
+                );
+
+
+            if (!flight) {
+
+                showSearchMessage(
+                    "Flight " +
+                    searchValue +
+                    " is not currently visible on the radar."
+                );
+
+                return;
+            }
+
+
+            currentSelectedFlight =
+                flight;
+
+
+            /* =========================
+               SHOW FLIGHT INFO
+            ========================= */
+
+            document.getElementById(
+                "flightInfo"
+            ).style.display =
+                "block";
+
+
+            document.getElementById(
+                "flightNumber"
+            ).textContent =
+                flight.callsign ||
+                searchValue;
+
+
+            document.getElementById(
+                "flightCountry"
+            ).textContent =
+                flight.country ||
+                "Unknown";
+
+
+            document.getElementById(
+                "flightPhase"
+            ).textContent =
+                flight.flight_phase ||
+                "UNKNOWN";
+
+
+            document.getElementById(
+                "flightAltitude"
+            ).textContent =
+                flight.altitude !== null &&
+                flight.altitude !== undefined
+                    ? Math.round(
+                        flight.altitude
+                      ) + " m"
+                    : "N/A";
+
+
+            document.getElementById(
+                "flightSpeed"
+            ).textContent =
+                flight.velocity !== null &&
+                flight.velocity !== undefined
+                    ? Math.round(
+                        flight.velocity * 3.6
+                      ) + " km/h"
+                    : "N/A";
+
+
+            document.getElementById(
+                "flightHeading"
+            ).textContent =
+                flight.heading !== null &&
+                flight.heading !== undefined
+                    ? Math.round(
+                        flight.heading
+                      ) + "°"
+                    : "N/A";
+
+
+            document.getElementById(
+                "flightDistance"
+            ).textContent =
+                flight.distance_from_airport !== null &&
+                flight.distance_from_airport !== undefined
+                    ? flight.distance_from_airport.toFixed(1) +
+                      " km"
+                    : "N/A";
+
+
+            /* =========================
+               CENTER ON AIRCRAFT
+            ========================= */
+
+            if (
+                flight.latitude !== null &&
+                flight.longitude !== null
+            ) {
+
+                map.flyTo(
+                    [
+                        flight.latitude,
+                        flight.longitude
+                    ],
+                    10,
+                    {
+                        duration: 1.2
+                    }
+                );
+
+
+                const marker =
+                    aircraftMarkers[
+                        flight.icao24
+                    ];
+
+                if (marker) {
+
+                    setTimeout(
+                        () => {
+                            marker.openPopup();
+                        },
+                        1200
+                    );
+
+                }
+
+            }
+
+
+            showSearchMessage(
+                "Flight " +
+                searchValue +
+                " found. Loading historical track...",
+                true
+            );
+
+
+            /* =========================
+               LOAD HISTORY
+            ========================= */
+
+            await loadHistoricalTrack(
+                searchValue
+            );
+
+        }
+
+
+        /* ============================================================
+           SEARCH BUTTON
+        ============================================================ */
+
+        document.getElementById(
+            "searchButton"
+        ).addEventListener(
+            "click",
+            searchFlight
+        );
+
+
+        /* ============================================================
+           ENTER KEY SEARCH
+        ============================================================ */
+
+        document.getElementById(
+            "flightSearch"
+        ).addEventListener(
+            "keydown",
+            event => {
+
+                if (
+                    event.key === "Enter"
+                ) {
+
+                    searchFlight();
+
+                }
+
+            }
+        );
+
+
+        /* ============================================================
+           START RADAR
+        ============================================================ */
+
+        loadFlights();
+
+        setInterval(
+            loadFlights,
+            20000
+        );
+
+
+        /* ============================================================
+           MAP RESIZE
+        ============================================================ */
+
+        setTimeout(
+            () => {
+                map.invalidateSize();
+            },
+            500
+        );
+
+    </script>
+
+</body>
+</html>
