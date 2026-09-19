@@ -1,21 +1,16 @@
-from flask import Flask, jsonify, send_file
+from flask import Flask, jsonify, send_from_directory
 import requests
 import math
 import sqlite3
-from datetime import datetime, timezone
+import os
 import time
-import random
-
-
-# ============================================================
-# FLASK APP
-# ============================================================
+from datetime import datetime, timezone
 
 app = Flask(__name__)
 
 
 # ============================================================
-# AIRPORT SETTINGS
+# CONFIGURATION
 # ============================================================
 
 AIRPORT_NAME = "London Heathrow"
@@ -24,35 +19,219 @@ AIRPORT_CODE = "LHR"
 AIRPORT_LAT = 51.4700
 AIRPORT_LON = -0.4543
 
-GEOFENCE_RADIUS_KM = 100
-
-
-# ============================================================
-# DATABASE
-# ============================================================
+GEOFENCE_RADIUS = 100  # km
 
 DATABASE = "flight_tracker.db"
 
-
-# ============================================================
-# OPENSKY SETTINGS
-# ============================================================
-
 OPENSKY_URL = "https://opensky-network.org/api/states/all"
 
-# Only contact OpenSky once every 60 seconds.
-OPENSKY_CACHE_SECONDS = 60
+# Don't hammer OpenSky.
+MIN_REQUEST_INTERVAL = 15
 
-
-# ============================================================
-# MEMORY CACHE
-# ============================================================
-
+last_request_time = 0
 last_successful_aircraft = []
+last_successful_time = None
 
-last_successful_request_time = 0
 
-last_opensky_error = None
+# ============================================================
+# OPTIONAL OPENSKY OAUTH
+# ============================================================
+
+OPENSKY_CLIENT_ID = os.getenv("OPENSKY_CLIENT_ID")
+OPENSKY_CLIENT_SECRET = os.getenv("OPENSKY_CLIENT_SECRET")
+
+access_token = None
+access_token_expires = 0
+
+
+def get_opensky_token():
+
+    global access_token
+    global access_token_expires
+
+    if not OPENSKY_CLIENT_ID or not OPENSKY_CLIENT_SECRET:
+        return None
+
+    if access_token and time.time() < access_token_expires:
+        return access_token
+
+    token_url = (
+        "https://auth.opensky-network.org/"
+        "auth/realms/opensky-network/protocol/openid-connect/token"
+    )
+
+    try:
+
+        response = requests.post(
+            token_url,
+            data={
+                "grant_type": "client_credentials",
+                "client_id": OPENSKY_CLIENT_ID,
+                "client_secret": OPENSKY_CLIENT_SECRET
+            },
+            timeout=10
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        access_token = data["access_token"]
+
+        expires_in = data.get("expires_in", 1800)
+
+        access_token_expires = time.time() + expires_in - 60
+
+        print("OpenSky OAuth authentication successful.")
+
+        return access_token
+
+    except Exception as error:
+
+        print("OpenSky OAuth failed:", error)
+
+        access_token = None
+
+        return None
+
+
+# ============================================================
+# AIRLINE IDENTIFICATION
+# ============================================================
+#
+# OpenSky provides a callsign such as:
+#
+# DAL123
+# BAW186
+# UAE202
+# QTR8
+#
+# The first three letters are commonly the ICAO operator
+# designator used in the aircraft callsign.
+#
+# IMPORTANT:
+# This identifies the OPERATING/CALLSIGN carrier.
+# It is not necessarily the marketing airline in a codeshare.
+#
+# ============================================================
+
+AIRLINE_BY_ICAO_CODE = {
+
+    # United States
+    "DAL": "Delta Air Lines",
+    "AAL": "American Airlines",
+    "UAL": "United Airlines",
+    "SWA": "Southwest Airlines",
+    "ASA": "Alaska Airlines",
+    "JBU": "JetBlue Airways",
+
+    # United Kingdom / Ireland
+    "BAW": "British Airways",
+    "VIR": "Virgin Atlantic",
+    "EIN": "Aer Lingus",
+    "EXS": "Jet2",
+    "EZY": "easyJet",
+
+    # Europe
+    "AFR": "Air France",
+    "KLM": "KLM Royal Dutch Airlines",
+    "DLH": "Lufthansa",
+    "EWG": "Eurowings",
+    "SWR": "SWISS",
+    "ITY": "ITA Airways",
+    "IBE": "Iberia",
+    "TAP": "TAP Air Portugal",
+    "SAS": "SAS Scandinavian Airlines",
+    "FIN": "Finnair",
+    "LOT": "LOT Polish Airlines",
+    "AUA": "Austrian Airlines",
+    "THY": "Turkish Airlines",
+    "WZZ": "Wizz Air",
+    "RYR": "Ryanair",
+    "TOM": "TUI Airways",
+    "CFG": "Condor",
+    "AEA": "Air Europa",
+
+    # Middle East
+    "UAE": "Emirates",
+    "ETD": "Etihad Airways",
+    "QTR": "Qatar Airways",
+    "THY": "Turkish Airlines",
+
+    # Saudi Arabia
+    "SVA": "Saudia",
+    "RXI": "Riyadh Air",
+
+    # Bahrain
+    "GFA": "Gulf Air",
+
+    # Kuwait
+    "KAC": "Kuwait Airways",
+    "JZR": "Jazeera Airways",
+
+    # Oman
+    "OMA": "Oman Air",
+
+    # India
+    "AIC": "Air India",
+    "AXB": "Air India Express",
+    "IGO": "IndiGo",
+    "SEJ": "SpiceJet",
+
+    # Pakistan
+    "PIA": "Pakistan International Airlines",
+    "ABQ": "Airblue",
+    "SVA": "Saudia",
+
+    # Asia
+    "SIA": "Singapore Airlines",
+    "CPA": "Cathay Pacific",
+    "ANA": "All Nippon Airways",
+    "JAL": "Japan Airlines",
+    "KAL": "Korean Air",
+    "CES": "China Eastern Airlines",
+    "CCA": "Air China",
+    "CSN": "China Southern Airlines",
+
+    # Australia / New Zealand
+    "QFA": "Qantas",
+    "VOZ": "Virgin Australia",
+    "ANZ": "Air New Zealand",
+
+    # Africa
+    "ETH": "Ethiopian Airlines",
+    "SAA": "South African Airways",
+
+    # Cargo
+    "FDX": "FedEx",
+    "UPS": "UPS Airlines",
+    "GTI": "Atlas Air",
+}
+
+
+def identify_airline(callsign):
+
+    if not callsign:
+        return "Unknown Operator"
+
+    callsign = callsign.strip().upper()
+
+    # Remove spaces
+    callsign = callsign.replace(" ", "")
+
+    # Need at least 3 characters
+    if len(callsign) < 3:
+        return "Unknown Operator"
+
+    # First three characters = ICAO operator code
+    icao_code = callsign[:3]
+
+    airline = AIRLINE_BY_ICAO_CODE.get(icao_code)
+
+    if airline:
+        return airline
+
+    return "Unknown Operator"
 
 
 # ============================================================
@@ -67,21 +246,75 @@ def setup_database():
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS Flight_Logs (
+
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+
             timestamp TEXT,
+
             icao24 TEXT,
+
             callsign TEXT,
+
             country TEXT,
+
             latitude REAL,
+
             longitude REAL,
+
             altitude REAL,
+
             velocity REAL,
+
             heading REAL,
+
             vertical_rate REAL,
+
             flight_phase TEXT,
-            distance_from_airport REAL
+
+            distance_from_airport REAL,
+
+            airline TEXT,
+
+            origin TEXT,
+
+            destination TEXT
+
         )
     """)
+
+    # --------------------------------------------------------
+    # Add columns if an older database already exists
+    # --------------------------------------------------------
+
+    cursor.execute("""
+        PRAGMA table_info(Flight_Logs)
+    """)
+
+    existing_columns = {
+        row[1]
+        for row in cursor.fetchall()
+    }
+
+    if "airline" not in existing_columns:
+
+        cursor.execute("""
+            ALTER TABLE Flight_Logs
+            ADD COLUMN airline TEXT
+        """)
+
+    if "origin" not in existing_columns:
+
+        cursor.execute("""
+            ALTER TABLE Flight_Logs
+            ADD COLUMN origin TEXT
+        """)
+
+    if "destination" not in existing_columns:
+
+        cursor.execute("""
+            ALTER TABLE Flight_Logs
+            ADD COLUMN destination TEXT
+        """)
 
     connection.commit()
 
@@ -107,7 +340,8 @@ def calculate_distance(lat1, lon1, lat2, lon2):
 
     a = (
         math.sin(dlat / 2) ** 2
-        + math.cos(lat1)
+        +
+        math.cos(lat1)
         * math.cos(lat2)
         * math.sin(dlon / 2) ** 2
     )
@@ -140,24 +374,347 @@ def determine_flight_phase(vertical_rate):
 
 
 # ============================================================
-# DATABASE LOGGING
+# OPENSKY REQUEST
 # ============================================================
 
-def save_flights_to_database(aircraft_list):
+def request_opensky_states():
+
+    global last_request_time
+
+    now = time.time()
+
+    # --------------------------------------------------------
+    # Don't make another request too quickly.
+    # Return cached data instead.
+    # --------------------------------------------------------
+
+    if (
+        now - last_request_time
+        <
+        MIN_REQUEST_INTERVAL
+    ):
+
+        if last_successful_aircraft:
+
+            print(
+                "OpenSky request cooldown active."
+            )
+
+            print(
+                "Using last successful OpenSky dataset."
+            )
+
+            return last_successful_aircraft, True
+
+    last_request_time = now
+
+    # --------------------------------------------------------
+    # Heathrow bounding box
+    #
+    # This reduces the amount of data downloaded.
+    # --------------------------------------------------------
+
+    lamin = 50.5
+    lamax = 52.5
+
+    lomin = -2.0
+    lomax = 1.2
+
+    params = {
+        "lamin": lamin,
+        "lamax": lamax,
+        "lomin": lomin,
+        "lomax": lomax
+    }
+
+    headers = {}
+
+    token = get_opensky_token()
+
+    if token:
+
+        headers["Authorization"] = (
+            f"Bearer {token}"
+        )
+
+    try:
+
+        response = requests.get(
+            OPENSKY_URL,
+            params=params,
+            headers=headers,
+            timeout=15
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        states = data.get("states", [])
+
+        print(
+            f"OpenSky returned {len(states)} state vectors."
+        )
+
+        return states, False
+
+    except requests.exceptions.HTTPError as error:
+
+        print(
+            "OpenSky HTTP error:",
+            error
+        )
+
+        if response.status_code == 429:
+
+            print(
+                "OpenSky rate limit reached."
+            )
+
+        if last_successful_aircraft:
+
+            print(
+                "Using last successful OpenSky dataset."
+            )
+
+            return last_successful_aircraft, True
+
+        raise
+
+    except Exception as error:
+
+        print(
+            "OpenSky request failed:",
+            error
+        )
+
+        if last_successful_aircraft:
+
+            print(
+                "Using last successful OpenSky dataset."
+            )
+
+            return last_successful_aircraft, True
+
+        raise
+
+
+# ============================================================
+# GET LIVE AIRCRAFT
+# ============================================================
+
+def get_live_aircraft():
+
+    global last_successful_aircraft
+    global last_successful_time
+
+    raw_states, using_cache = (
+        request_opensky_states()
+    )
+
+    aircraft_list = []
+
+    # --------------------------------------------------------
+    # Parse OpenSky state vectors
+    # --------------------------------------------------------
+
+    for aircraft in raw_states:
+
+        try:
+
+            icao24 = aircraft[0]
+
+            callsign = (
+                aircraft[1].strip()
+                if aircraft[1]
+                else "Unknown"
+            )
+
+            country = aircraft[2]
+
+            longitude = aircraft[5]
+
+            latitude = aircraft[6]
+
+            altitude = aircraft[7]
+
+            on_ground = aircraft[8]
+
+            velocity = aircraft[9]
+
+            heading = aircraft[10]
+
+            vertical_rate = aircraft[11]
+
+            geo_altitude = aircraft[13]
+
+            squawk = aircraft[14]
+
+            position_source = aircraft[16]
+
+            # ------------------------------------------------
+            # We need a valid position.
+            # ------------------------------------------------
+
+            if latitude is None or longitude is None:
+                continue
+
+            # ------------------------------------------------
+            # Calculate distance from Heathrow.
+            # ------------------------------------------------
+
+            distance = calculate_distance(
+                AIRPORT_LAT,
+                AIRPORT_LON,
+                latitude,
+                longitude
+            )
+
+            # ------------------------------------------------
+            # 100 km geofence.
+            # ------------------------------------------------
+
+            if distance > GEOFENCE_RADIUS:
+                continue
+
+            # ------------------------------------------------
+            # Identify airline from callsign.
+            # ------------------------------------------------
+
+            airline = identify_airline(
+                callsign
+            )
+
+            # ------------------------------------------------
+            # OpenSky live state vectors do NOT reliably
+            # provide live commercial origin/destination.
+            #
+            # DO NOT GUESS.
+            # ------------------------------------------------
+
+            origin = None
+            destination = None
+
+            flight_phase = (
+                determine_flight_phase(
+                    vertical_rate
+                )
+            )
+
+            aircraft_info = {
+
+                "icao24": icao24,
+
+                "callsign": callsign,
+
+                "flight_number": callsign,
+
+                "airline": airline,
+
+                "operator": airline,
+
+                "origin": origin,
+
+                "destination": destination,
+
+                "country": country,
+
+                "latitude": latitude,
+
+                "longitude": longitude,
+
+                "altitude": altitude,
+
+                "geo_altitude": geo_altitude,
+
+                "velocity": velocity,
+
+                "heading": heading,
+
+                "vertical_rate": vertical_rate,
+
+                "flight_phase": flight_phase,
+
+                "distance_from_airport": distance,
+
+                "on_ground": on_ground,
+
+                "squawk": squawk,
+
+                "position_source": position_source
+            }
+
+            aircraft_list.append(
+                aircraft_info
+            )
+
+        except Exception as error:
+
+            print(
+                "Aircraft parsing error:",
+                error
+            )
+
+            continue
+
+    # --------------------------------------------------------
+    # Only replace cache after a REAL successful request.
+    # --------------------------------------------------------
+
+    if not using_cache:
+
+        last_successful_aircraft = (
+            aircraft_list
+        )
+
+        last_successful_time = (
+            datetime.now(timezone.utc)
+            .isoformat()
+        )
+
+        print(
+            f"OpenSky live update: "
+            f"{len(aircraft_list)} aircraft "
+            f"within {GEOFENCE_RADIUS} km."
+        )
+
+    else:
+
+        print(
+            f"Returning cached dataset: "
+            f"{len(aircraft_list)} aircraft."
+        )
+
+    return aircraft_list, using_cache
+
+
+# ============================================================
+# SAVE FLIGHTS TO DATABASE
+# ============================================================
+
+def save_flights_to_database(
+    aircraft_list
+):
 
     if not aircraft_list:
         return
 
-    connection = sqlite3.connect(DATABASE)
+    connection = sqlite3.connect(
+        DATABASE
+    )
 
     cursor = connection.cursor()
 
-    timestamp = datetime.now(timezone.utc).isoformat()
+    timestamp = (
+        datetime.now(timezone.utc)
+        .isoformat()
+    )
 
     for aircraft in aircraft_list:
 
         cursor.execute("""
             INSERT INTO Flight_Logs (
+
                 timestamp,
                 icao24,
                 callsign,
@@ -169,23 +726,47 @@ def save_flights_to_database(aircraft_list):
                 heading,
                 vertical_rate,
                 flight_phase,
-                distance_from_airport
+                distance_from_airport,
+                airline,
+                origin,
+                destination
+
             )
 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+
         """, (
+
             timestamp,
+
             aircraft["icao24"],
+
             aircraft["callsign"],
+
             aircraft["country"],
+
             aircraft["latitude"],
+
             aircraft["longitude"],
+
             aircraft["altitude"],
+
             aircraft["velocity"],
+
             aircraft["heading"],
+
             aircraft["vertical_rate"],
+
             aircraft["flight_phase"],
-            aircraft["distance_from_airport"]
+
+            aircraft["distance_from_airport"],
+
+            aircraft["airline"],
+
+            aircraft["origin"],
+
+            aircraft["destination"]
+
         ))
 
     connection.commit()
@@ -194,696 +775,88 @@ def save_flights_to_database(aircraft_list):
 
 
 # ============================================================
-# DEMO AIRCRAFT
-# ============================================================
-#
-# These aircraft are used only when OpenSky is unavailable.
-#
-# They are positioned around Heathrow so they appear inside
-# the 100 km radar circle.
-#
-# ============================================================
-
-DEMO_AIRCRAFT = [
-
-    # --------------------------------------------------------
-    # BRITISH AIRWAYS
-    # --------------------------------------------------------
-
-    {
-        "icao24": "DEMOBAW01",
-        "callsign": "BAW186",
-        "country": "United Kingdom",
-        "latitude": 51.72,
-        "longitude": -0.20,
-        "altitude": 9200,
-        "velocity": 225,
-        "heading": 245,
-        "vertical_rate": -4.2
-    },
-
-    {
-        "icao24": "DEMOBAW02",
-        "callsign": "BAW12",
-        "country": "United Kingdom",
-        "latitude": 51.38,
-        "longitude": -0.75,
-        "altitude": 6800,
-        "velocity": 205,
-        "heading": 65,
-        "vertical_rate": 3.1
-    },
-
-
-    # --------------------------------------------------------
-    # EMIRATES
-    # --------------------------------------------------------
-
-    {
-        "icao24": "DEMOEK01",
-        "callsign": "EK202",
-        "country": "United Arab Emirates",
-        "latitude": 51.55,
-        "longitude": -0.05,
-        "altitude": 10400,
-        "velocity": 245,
-        "heading": 280,
-        "vertical_rate": 0.1
-    },
-
-
-    # --------------------------------------------------------
-    # QATAR AIRWAYS
-    # --------------------------------------------------------
-
-    {
-        "icao24": "DEMOQTR01",
-        "callsign": "QTR8",
-        "country": "Qatar",
-        "latitude": 51.25,
-        "longitude": -0.30,
-        "altitude": 5400,
-        "velocity": 190,
-        "heading": 15,
-        "vertical_rate": -5.0
-    },
-
-
-    # --------------------------------------------------------
-    # JAZEERA AIRWAYS 🇰🇼
-    # --------------------------------------------------------
-
-    {
-        "icao24": "DEMOJ9AIR01",
-        "callsign": "J9101",
-        "country": "Kuwait",
-        "latitude": 51.62,
-        "longitude": -0.58,
-        "altitude": 7600,
-        "velocity": 215,
-        "heading": 120,
-        "vertical_rate": -1.8
-    },
-
-    {
-        "icao24": "DEMOJ9AIR02",
-        "callsign": "J9125",
-        "country": "Kuwait",
-        "latitude": 51.31,
-        "longitude": -0.12,
-        "altitude": 4300,
-        "velocity": 175,
-        "heading": 310,
-        "vertical_rate": 2.7
-    },
-
-
-    # --------------------------------------------------------
-    # KUWAIT AIRWAYS 🇰🇼
-    # --------------------------------------------------------
-
-    {
-        "icao24": "DEMOKU01",
-        "callsign": "KU101",
-        "country": "Kuwait",
-        "latitude": 51.48,
-        "longitude": -0.82,
-        "altitude": 8500,
-        "velocity": 230,
-        "heading": 90,
-        "vertical_rate": 0.0
-    },
-
-    {
-        "icao24": "DEMOKU02",
-        "callsign": "KU103",
-        "country": "Kuwait",
-        "latitude": 51.82,
-        "longitude": -0.48,
-        "altitude": 6100,
-        "velocity": 200,
-        "heading": 190,
-        "vertical_rate": -3.4
-    },
-
-
-    # --------------------------------------------------------
-    # SAUDIA 🇸🇦
-    # --------------------------------------------------------
-
-    {
-        "icao24": "DEMOSV01",
-        "callsign": "SV101",
-        "country": "Saudi Arabia",
-        "latitude": 51.68,
-        "longitude": -0.72,
-        "altitude": 9700,
-        "velocity": 240,
-        "heading": 135,
-        "vertical_rate": 0.3
-    },
-
-    {
-        "icao24": "DEMOSV02",
-        "callsign": "SV107",
-        "country": "Saudi Arabia",
-        "latitude": 51.20,
-        "longitude": -0.65,
-        "altitude": 7200,
-        "velocity": 210,
-        "heading": 35,
-        "vertical_rate": 4.0
-    },
-
-
-    # --------------------------------------------------------
-    # RIYADH AIR 🇸🇦
-    # --------------------------------------------------------
-
-    {
-        "icao24": "DEMORX01",
-        "callsign": "RX101",
-        "country": "Saudi Arabia",
-        "latitude": 51.57,
-        "longitude": -0.40,
-        "altitude": 11200,
-        "velocity": 255,
-        "heading": 250,
-        "vertical_rate": 0.0
-    },
-
-    {
-        "icao24": "DEMORX02",
-        "callsign": "RX105",
-        "country": "Saudi Arabia",
-        "latitude": 51.42,
-        "longitude": -0.05,
-        "altitude": 5900,
-        "velocity": 195,
-        "heading": 330,
-        "vertical_rate": -2.4
-    },
-
-
-    # --------------------------------------------------------
-    # OMAN AIR 🇴🇲
-    # --------------------------------------------------------
-
-    {
-        "icao24": "DEMOWY01",
-        "callsign": "WY101",
-        "country": "Oman",
-        "latitude": 51.76,
-        "longitude": -0.02,
-        "altitude": 8900,
-        "velocity": 235,
-        "heading": 210,
-        "vertical_rate": 1.5
-    },
-
-    {
-        "icao24": "DEMOWY02",
-        "callsign": "WY105",
-        "country": "Oman",
-        "latitude": 51.34,
-        "longitude": -0.92,
-        "altitude": 4800,
-        "velocity": 180,
-        "heading": 75,
-        "vertical_rate": -4.0
-    },
-
-
-    # --------------------------------------------------------
-    # GULF AIR 🇧🇭
-    # --------------------------------------------------------
-
-    {
-        "icao24": "DEMOGF01",
-        "callsign": "GF1",
-        "country": "Bahrain",
-        "latitude": 51.52,
-        "longitude": -0.90,
-        "altitude": 10300,
-        "velocity": 250,
-        "heading": 155,
-        "vertical_rate": 0.0
-    },
-
-    {
-        "icao24": "DEMOGF02",
-        "callsign": "GF5",
-        "country": "Bahrain",
-        "latitude": 51.30,
-        "longitude": -0.48,
-        "altitude": 6500,
-        "velocity": 205,
-        "heading": 300,
-        "vertical_rate": 2.2
-    },
-
-
-    # --------------------------------------------------------
-    # AIR FRANCE
-    # --------------------------------------------------------
-
-    {
-        "icao24": "DEMOAF01",
-        "callsign": "AF1381",
-        "country": "France",
-        "latitude": 51.60,
-        "longitude": -0.92,
-        "altitude": 7800,
-        "velocity": 220,
-        "heading": 80,
-        "vertical_rate": -1.2
-    },
-
-
-    # --------------------------------------------------------
-    # LUFTHANSA
-    # --------------------------------------------------------
-
-    {
-        "icao24": "DEMOLH01",
-        "callsign": "LH920",
-        "country": "Germany",
-        "latitude": 51.22,
-        "longitude": -0.08,
-        "altitude": 8200,
-        "velocity": 225,
-        "heading": 270,
-        "vertical_rate": 0.4
-    },
-
-
-    # --------------------------------------------------------
-    # TURKISH AIRLINES
-    # --------------------------------------------------------
-
-    {
-        "icao24": "DEMOTK01",
-        "callsign": "TK1971",
-        "country": "Türkiye",
-        "latitude": 51.78,
-        "longitude": -0.85,
-        "altitude": 6900,
-        "velocity": 210,
-        "heading": 165,
-        "vertical_rate": -3.0
-    }
-
-]
-
-
-# ============================================================
-# BUILD DEMO DATA
-# ============================================================
-
-def get_demo_aircraft():
-
-    demo_list = []
-
-    for aircraft in DEMO_AIRCRAFT:
-
-        # Make a copy so the original coordinates stay clean.
-        plane = aircraft.copy()
-
-        # Slight movement so demo planes don't look completely frozen.
-        plane["latitude"] += random.uniform(-0.005, 0.005)
-        plane["longitude"] += random.uniform(-0.005, 0.005)
-
-        # Slightly vary altitude and speed.
-        if plane["altitude"] is not None:
-            plane["altitude"] += random.randint(-100, 100)
-
-        if plane["velocity"] is not None:
-            plane["velocity"] += random.uniform(-3, 3)
-
-        # Determine phase.
-        plane["flight_phase"] = determine_flight_phase(
-            plane["vertical_rate"]
-        )
-
-        # Calculate distance from Heathrow.
-        plane["distance_from_airport"] = calculate_distance(
-            AIRPORT_LAT,
-            AIRPORT_LON,
-            plane["latitude"],
-            plane["longitude"]
-        )
-
-        demo_list.append(plane)
-
-    return demo_list
-
-
-# ============================================================
-# GET LIVE OPENSKY DATA
-# ============================================================
-
-def get_live_aircraft():
-
-    global last_successful_aircraft
-    global last_successful_request_time
-    global last_opensky_error
-
-    current_time = time.time()
-
-
-    # --------------------------------------------------------
-    # USE CACHE
-    # --------------------------------------------------------
-
-    if (
-        last_successful_aircraft
-        and
-        current_time - last_successful_request_time
-        < OPENSKY_CACHE_SECONDS
-    ):
-
-        print("Using cached OpenSky data...")
-
-        return last_successful_aircraft, "LIVE_CACHE"
-
-
-    # --------------------------------------------------------
-    # REQUEST OPENSKY
-    # --------------------------------------------------------
-
-    print("Fetching live OpenSky data...")
-
-    try:
-
-        response = requests.get(
-            OPENSKY_URL,
-            timeout=15,
-            headers={
-                "User-Agent":
-                "GlobalFlightRadar-CollegeProject/1.0"
-            }
-        )
-
-        response.raise_for_status()
-
-        data = response.json()
-
-        states = data.get("states", [])
-
-        aircraft_list = []
-
-
-        # ----------------------------------------------------
-        # PROCESS STATE VECTORS
-        # ----------------------------------------------------
-
-        for aircraft in states:
-
-            if len(aircraft) < 12:
-                continue
-
-
-            icao24 = aircraft[0]
-
-            callsign = (
-                aircraft[1].strip()
-                if aircraft[1]
-                else "Unknown"
-            )
-
-            country = aircraft[2] or "Unknown"
-
-            longitude = aircraft[5]
-
-            latitude = aircraft[6]
-
-            altitude = aircraft[7]
-
-            velocity = aircraft[9]
-
-            heading = aircraft[10]
-
-            vertical_rate = aircraft[11]
-
-
-            # Need a valid position.
-            if latitude is None or longitude is None:
-                continue
-
-
-            # ------------------------------------------------
-            # 100 KM GEOFENCE
-            # ------------------------------------------------
-
-            distance = calculate_distance(
-                AIRPORT_LAT,
-                AIRPORT_LON,
-                latitude,
-                longitude
-            )
-
-
-            if distance > GEOFENCE_RADIUS_KM:
-                continue
-
-
-            # ------------------------------------------------
-            # FLIGHT PHASE
-            # ------------------------------------------------
-
-            flight_phase = determine_flight_phase(
-                vertical_rate
-            )
-
-
-            aircraft_list.append({
-
-                "icao24": icao24,
-
-                "callsign": callsign,
-
-                "country": country,
-
-                "latitude": latitude,
-
-                "longitude": longitude,
-
-                "altitude": altitude,
-
-                "velocity": velocity,
-
-                "heading": heading,
-
-                "vertical_rate": vertical_rate,
-
-                "flight_phase": flight_phase,
-
-                "distance_from_airport": distance
-
-            })
-
-
-        # ----------------------------------------------------
-        # SUCCESS
-        # ----------------------------------------------------
-
-        last_successful_aircraft = aircraft_list
-
-        last_successful_request_time = time.time()
-
-        last_opensky_error = None
-
-
-        print(
-            "OpenSky success:",
-            len(aircraft_list),
-            "aircraft inside geofence"
-        )
-
-
-        # Save live data.
-        save_flights_to_database(
-            aircraft_list
-        )
-
-
-        return aircraft_list, "LIVE"
-
-
-    # ========================================================
-    # OPENSKY ERROR
-    # ========================================================
-
-    except requests.exceptions.HTTPError as error:
-
-        last_opensky_error = str(error)
-
-        print(
-            "OpenSky HTTP error:",
-            error
-        )
-
-
-        # ----------------------------------------------------
-        # FIRST CHOICE:
-        # LAST SUCCESSFUL DATA
-        # ----------------------------------------------------
-
-        if last_successful_aircraft:
-
-            print(
-                "Using last successful OpenSky data."
-            )
-
-            return (
-                last_successful_aircraft,
-                "LIVE_CACHED"
-            )
-
-
-        # ----------------------------------------------------
-        # NO CACHE:
-        # USE DEMO MODE
-        # ----------------------------------------------------
-
-        print(
-            "No cached data available."
-        )
-
-        print(
-            "Switching to DEMO aircraft."
-        )
-
-        return (
-            get_demo_aircraft(),
-            "DEMO"
-        )
-
-
-    except requests.exceptions.RequestException as error:
-
-        last_opensky_error = str(error)
-
-        print(
-            "OpenSky connection error:",
-            error
-        )
-
-
-        if last_successful_aircraft:
-
-            print(
-                "Using last successful OpenSky data."
-            )
-
-            return (
-                last_successful_aircraft,
-                "LIVE_CACHED"
-            )
-
-
-        print(
-            "Switching to DEMO aircraft."
-        )
-
-        return (
-            get_demo_aircraft(),
-            "DEMO"
-        )
-
-
-    except Exception as error:
-
-        last_opensky_error = str(error)
-
-        print(
-            "Unexpected OpenSky error:",
-            error
-        )
-
-
-        if last_successful_aircraft:
-
-            return (
-                last_successful_aircraft,
-                "LIVE_CACHED"
-            )
-
-
-        return (
-            get_demo_aircraft(),
-            "DEMO"
-        )
-
-
-# ============================================================
-# NORMALIZE FLIGHT NUMBER
-# ============================================================
-
-def normalize_flight_number(flight_number):
-
-    return (
-        flight_number
-        .strip()
-        .upper()
-        .replace(" ", "")
-    )
-
-
-# ============================================================
-# LIVE FLIGHTS API
+# API: LIVE FLIGHTS
 # ============================================================
 
 @app.route("/api/flights")
-def flights_api():
+def api_flights():
 
-    aircraft, source = get_live_aircraft()
+    try:
 
+        aircraft, using_cache = (
+            get_live_aircraft()
+        )
 
-    return jsonify({
+        # ----------------------------------------------------
+        # IMPORTANT:
+        # Only write fresh OpenSky data.
+        #
+        # If we're returning cached data after a 429,
+        # don't duplicate old records in SQLite.
+        # ----------------------------------------------------
 
-        "source": source,
+        if not using_cache:
 
-        "airport": AIRPORT_NAME,
+            save_flights_to_database(
+                aircraft
+            )
 
-        "airport_code": AIRPORT_CODE,
+        return jsonify({
 
-        "radius_km": GEOFENCE_RADIUS_KM,
+            "source": "OpenSky",
 
-        "aircraft": aircraft,
+            "cached": using_cache,
 
-        "count": len(aircraft),
+            "updated_at": (
+                last_successful_time
+            ),
 
-        "last_successful_update": (
-            datetime.fromtimestamp(
-                last_successful_request_time,
-                timezone.utc
-            ).isoformat()
-            if last_successful_request_time
-            else None
-        ),
+            "airport": AIRPORT_NAME,
 
-        "error": last_opensky_error
+            "airport_code": AIRPORT_CODE,
 
-    })
+            "radius_km": GEOFENCE_RADIUS,
+
+            "aircraft": aircraft
+
+        })
+
+    except Exception as error:
+
+        print(
+            "API /api/flights error:",
+            error
+        )
+
+        return jsonify({
+
+            "error": str(error),
+
+            "source": "OpenSky"
+
+        }), 503
 
 
 # ============================================================
-# FLIGHT HISTORY API
+# API: FLIGHT HISTORY
 # ============================================================
 
-@app.route("/api/flight-history/<flight_number>")
+@app.route(
+    "/api/flight-history/<flight_number>"
+)
 def flight_history(flight_number):
 
-    search_value = normalize_flight_number(
+    search_value = (
         flight_number
+        .strip()
+        .upper()
     )
 
-
-    connection = sqlite3.connect(DATABASE)
+    connection = sqlite3.connect(
+        DATABASE
+    )
 
     cursor = connection.cursor()
-
 
     cursor.execute("""
         SELECT
@@ -891,6 +864,9 @@ def flight_history(flight_number):
             callsign,
             icao24,
             country,
+            airline,
+            origin,
+            destination,
             latitude,
             longitude,
             altitude,
@@ -903,23 +879,26 @@ def flight_history(flight_number):
         FROM Flight_Logs
 
         WHERE
-            UPPER(REPLACE(callsign, ' ', '')) = ?
-            OR
-            UPPER(icao24) = ?
+            UPPER(callsign) = ?
+            OR UPPER(icao24) = ?
 
         ORDER BY id ASC
 
         LIMIT 500
     """, (
+
         search_value,
         search_value
-    ))
 
+    ))
 
     rows = cursor.fetchall()
 
     connection.close()
 
+    # --------------------------------------------------------
+    # Nothing found
+    # --------------------------------------------------------
 
     if not rows:
 
@@ -927,11 +906,7 @@ def flight_history(flight_number):
 
             "found": False,
 
-            "callsign": search_value,
-
-            "icao24": None,
-
-            "country": "Unknown",
+            "flight_number": search_value,
 
             "record_count": 0,
 
@@ -939,9 +914,11 @@ def flight_history(flight_number):
 
         })
 
+    # --------------------------------------------------------
+    # Build history
+    # --------------------------------------------------------
 
     history = []
-
 
     for row in rows:
 
@@ -955,34 +932,49 @@ def flight_history(flight_number):
 
             "country": row[3],
 
-            "latitude": row[4],
+            "airline": row[4],
 
-            "longitude": row[5],
+            "origin": row[5],
 
-            "altitude": row[6],
+            "destination": row[6],
 
-            "velocity": row[7],
+            "latitude": row[7],
 
-            "heading": row[8],
+            "longitude": row[8],
 
-            "vertical_rate": row[9],
+            "altitude": row[9],
 
-            "flight_phase": row[10],
+            "velocity": row[10],
 
-            "distance_from_airport": row[11]
+            "heading": row[11],
+
+            "vertical_rate": row[12],
+
+            "flight_phase": row[13],
+
+            "distance_from_airport": row[14]
 
         })
 
+    first = rows[0]
 
     return jsonify({
 
         "found": True,
 
-        "callsign": rows[0][1],
+        "flight_number": search_value,
 
-        "icao24": rows[0][2],
+        "callsign": first[1],
 
-        "country": rows[0][3],
+        "icao24": first[2],
+
+        "country": first[3],
+
+        "airline": first[4],
+
+        "origin": first[5],
+
+        "destination": first[6],
 
         "record_count": len(history),
 
@@ -992,35 +984,37 @@ def flight_history(flight_number):
 
 
 # ============================================================
-# DATABASE STATS
+# API: DATABASE STATS
 # ============================================================
 
 @app.route("/api/database-stats")
 def database_stats():
 
-    connection = sqlite3.connect(DATABASE)
+    connection = sqlite3.connect(
+        DATABASE
+    )
 
     cursor = connection.cursor()
-
 
     cursor.execute("""
         SELECT COUNT(*)
         FROM Flight_Logs
     """)
 
-    total_records = cursor.fetchone()[0]
-
+    total_records = (
+        cursor.fetchone()[0]
+    )
 
     cursor.execute("""
         SELECT COUNT(DISTINCT icao24)
         FROM Flight_Logs
     """)
 
-    unique_aircraft = cursor.fetchone()[0]
-
+    unique_aircraft = (
+        cursor.fetchone()[0]
+    )
 
     connection.close()
-
 
     return jsonify({
 
@@ -1032,54 +1026,57 @@ def database_stats():
 
 
 # ============================================================
-# MAIN MAP
+# SERVE MAP
 # ============================================================
 
 @app.route("/")
 def home():
 
-    return send_file("map.html")
+    return send_from_directory(
+        ".",
+        "map.html"
+    )
 
 
 # ============================================================
-# 3D MAP
+# SERVE 3D MAP
 # ============================================================
 
 @app.route("/3d")
 def three_d():
 
-    return send_file("3d.html")
+    return send_from_directory(
+        ".",
+        "3d.html"
+    )
 
 
 # ============================================================
-# START SERVER
+# STARTUP
 # ============================================================
 
 if __name__ == "__main__":
 
     setup_database()
 
-
     print("")
-    print("==============================================")
-    print("        GLOBAL FLIGHT RADAR")
-    print("==============================================")
+    print("==========================================")
+    print("       GLOBAL FLIGHT RADAR")
+    print("==========================================")
     print("")
-    print("Radar mode: LIVE OPENSKY + DEMO FALLBACK")
+    print("Source: OpenSky Network")
     print("Airport:", AIRPORT_NAME)
-    print("Airport code:", AIRPORT_CODE)
-    print("Geofence:", GEOFENCE_RADIUS_KM, "km")
-    print("Database logging: ENABLED")
-    print("OpenSky cache:", OPENSKY_CACHE_SECONDS, "seconds")
-    print("Demo airlines: Jazeera, Kuwait Airways, Saudia,")
-    print("               Riyadh Air, Oman Air, Gulf Air")
+    print("Airport Code:", AIRPORT_CODE)
+    print("Geofence:", GEOFENCE_RADIUS, "km")
     print("")
-    print("Open browser:")
+    print("Airline identification: ENABLED")
+    print("Database logging: ENABLED")
+    print("OpenSky caching: ENABLED")
+    print("")
+    print("Live radar:")
     print("http://127.0.0.1:5000")
     print("")
-    print("==============================================")
-    print("")
-
+    print("==========================================")
 
     app.run(
         debug=False,
